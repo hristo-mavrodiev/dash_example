@@ -3,41 +3,52 @@ from time import time,sleep
 # Create random data with numpy
 import numpy as np
 import pandas as pd
+import time
+import os
+from uuid import uuid4
 
+import dash
+from dash import DiskcacheManager, CeleryManager, html
 
 import datetime as dt
 from dash import Dash, html, dcc, Input, Output
 from dash.dependencies import Input, Output
-from flask_caching import Cache
+# from flask_caching import Cache
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 
-app = Dash(__name__, external_stylesheets=external_stylesheets)
-cache = Cache(app.server, config={
-    'CACHE_TYPE': 'filesystem',
-    'CACHE_DIR': 'cache-directory'
-})
 
-TIMEOUT = 600
+launch_uid = uuid4()
 
-# @cache.memoize(timeout=TIMEOUT)
-# def query_data():
-#     # This could be an expensive data querying step
-#     np.random.seed(0)  # no-display
-#     df = pd.DataFrame(
-#         np.random.randint(0, 100, size=(100, 4)),
-#         columns=list('ABCD')
-#     )
-#     now = dt.datetime.now()
-#     df['time'] = [now - dt.timedelta(seconds=5*i) for i in range(100)]
-#     return df.to_json(date_format='iso', orient='split')
+if 'REDIS_URL' in os.environ:
+    # Use Redis & Celery if REDIS_URL set as an env variable
+    from celery import Celery
+    celery_app = Celery(__name__, broker=os.environ['REDIS_URL'], backend=os.environ['REDIS_URL'])
+    background_callback_manager = CeleryManager(
+        celery_app, cache_by=[lambda: launch_uid], expire=60
+    )
+
+else:
+    # Diskcache for non-production apps when developing locally
+    import diskcache
+    cache = diskcache.Cache("./cache")
+    background_callback_manager = DiskcacheManager(
+        cache, cache_by=[lambda: launch_uid], expire=60
+    )
+
+app = Dash(__name__, background_callback_manager=background_callback_manager, external_stylesheets=external_stylesheets)
+# cache = Cache(app.server, config={
+#     'CACHE_TYPE': 'filesystem',
+#     'CACHE_DIR': 'cache-directory'
+# })
+
+# TIMEOUT = 600
 
 
 def query_data():
     return pd.read_json(generate_data(), orient='split')
 
 app.layout = html.Div([
-    html.Div('Data was updated within the last {} seconds'.format(TIMEOUT)),
-    #dcc.Dropdown(["DE","NL","BE",'TT'], 'TT', id='live-dropdown'),
+    #html.Div('Data was updated within the last {} seconds'.format(TIMEOUT)),
     dcc.Graph(id='live-graph'),
     dcc.Interval(
         id='interval-component',
@@ -48,9 +59,9 @@ app.layout = html.Div([
 
 
 @app.callback(Output('live-graph', 'figure'),
-              #Input('live-dropdown', 'value'),
-              Input('interval-component', 'n_intervals'))
-#def update_live_graph(value,n_intervals):
+              Input('interval-component', 'n_intervals'),
+              background=True,
+              manager=background_callback_manager)
 def update_live_graph(n_intervals):
     now = dt.datetime.now()
     df2 = query_data()
@@ -86,10 +97,7 @@ def update_live_graph(n_intervals):
         }
     }
 
-@cache.memoize(timeout=TIMEOUT)
 def generate_data():
-    #print("sleeping..20")
-    #sleep(20)
     rng = np.random.default_rng()
     raw_curve = pd.DataFrame(pd.date_range('2022-01-01','2027-06-01',freq='H'),columns=['delivery_begin'])
     raw_curve = raw_curve.assign(price = 100 * rng.random((len(raw_curve),)) + 10)

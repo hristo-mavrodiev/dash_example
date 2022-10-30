@@ -2,4 +2,6 @@ pandas
 numpy
 dash
 plotly
+dash[diskcache]
+dash[celery]
 Flask-Caching
